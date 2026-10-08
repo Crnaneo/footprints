@@ -1,0 +1,3 @@
+# Optional global railway importer dependencies.
+-r requirements.txt
+pyarrow==25.0.1

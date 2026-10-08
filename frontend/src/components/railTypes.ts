@@ -1,0 +1,9 @@
+export interface Station { id: string; name: string; kind: string; first_arrival_date: string | null; arrival_source?: string | null }
+export interface Section { interval_id: string; origin: string; destination: string; origin_id?: string; destination_id?: string; origin_station?: Station; destination_station?: Station; distance_km: number; station_count?: number; stations?: string[]; station_details?: Station[]; reference_gaps?: {origin:string;destination:string;distance_m:number}[]; origin_kind?: string; destination_kind?: string; manual?: boolean }
+export interface Line { line_id: string; name: string; aliases?: { name: string; line_id: string }[]; intervals: Section[]; trip_count: number; source_url: string; manual?: boolean; manual_revision: string; direction?: { known: boolean; from: string; to: string; source: string } }
+export interface SharedOnlyLine { line_id: string; name: string; attributed_to: string; reason: string; point_count: number; dates?: string[] }
+export interface Coverage { hidden_lines?: {line_id:string;name:string;manual_revision:string}[]; manual_exclusions?: { line_id: string; name: string; reason: string }[]; shared_only_lines?: SharedOnlyLine[]; lines: Line[]; stale: boolean; catalog_available: boolean; generated_at?: string; method?: string; station_nearby_m?: number; unresolved_lines?: { name: string; reason: string }[]; progress: { state: string; processed: number; total: number; error?: string } }
+export interface EditResult { undo_token: string; line_id?: string }
+export interface LineChoice { line_id:string; name:string; ref?:string }
+export interface CatalogStation { id:string;name:string;kind:string;order:number }
+export interface Catalog { line_id:string;name:string;stations:CatalogStation[];manual_revision:string;direction?:Line['direction'] }
