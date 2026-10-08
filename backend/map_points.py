@@ -221,7 +221,59 @@ def encode_points(rows,z,x,y):
     return blob(3,bytes(layer)),count
 
 
-def tile_entry(store,key,z,x,y):
+POINT_BATCH_SIZE=128
+
+
+def encode_point_batches(rows,z,x,y):
+    """Keep every point, but share MVT properties within bounded MultiPoints.
+
+    Each batch belongs to one trip/colour. Its first ID is the feature ID and
+    signed ID deltas retain the identity of every subsequent original point.
+    Geometry contains only MoveTo commands: no connecting lines or sampling.
+    Limit both batch size and pending trips so encoding remains streaming.
+    """
+    scale=EXTENT*(2**z);offset_x=x*EXTENT;offset_y=y*EXTENT
+    values=[];lookup={};features=bytearray();pending=OrderedDict();count=0
+    def value(s):
+        if s not in lookup:lookup[s]=len(values);values.append(s)
+        return lookup[s]
+    def emit(key,points):
+        tid,mode=key
+        tags=varint(0)+varint(value(tid))+varint(1)+varint(value(COLORS[mode]))
+        if len(points)>1:
+            deltas=json.dumps([b[0]-a[0] for a,b in zip(points,points[1:])],separators=(',',':'))
+            tags+=varint(2)+varint(value(deltas))
+        geometry=bytearray(varint((len(points)<<3)|1))
+        previous_x=previous_y=0
+        for _,px,py in points:
+            dx,dy=px-previous_x,py-previous_y
+            previous_x,previous_y=px,py
+            for delta in (dx,dy):
+                n=delta*2 if delta>=0 else -delta*2-1
+                while n>127:geometry.append((n&127)|128);n>>=7
+                geometry.append(n)
+        feature=integer(1,points[0][0])+blob(2,tags)+integer(3,1)+blob(4,geometry)
+        features.extend(blob(2,feature))
+    for pid,tid,wx,wy,mode in rows:
+        key=(tid,mode if mode in COLORS else 'other')
+        if key not in pending:
+            if len(pending)>=64:
+                old,points=pending.popitem(last=False);emit(old,points)
+            pending[key]=[]
+        points=pending[key];pending.move_to_end(key)
+        points.append((pid,round(wx*scale-offset_x),round(wy*scale-offset_y)));count+=1
+        if len(points)==POINT_BATCH_SIZE:
+            emit(key,points);del pending[key]
+    for key,points in pending.items():emit(key,points)
+    layer=bytearray(integer(15,2)+blob(1,b'points'))
+    layer.extend(features)
+    for name in ('tripId','color','pointDeltas'):layer.extend(blob(3,name.encode()))
+    for s in values:layer.extend(blob(4,blob(1,s.encode())))
+    layer.extend(integer(5,EXTENT))
+    return blob(3,layer),count
+
+
+def tile_entry(store,key,z,x,y,packed=False):
     """Bounded cache shared by concurrent requests, invalidated by data revision."""
     if not 0<=z<=19 or not 0<=x<2**z or not 0<=y<2**z:raise ValueError('无效瓦片坐标')
     path=str(store.path.resolve())
@@ -239,7 +291,7 @@ def tile_entry(store,key,z,x,y):
                     if old_key[0]==path and old_key[1]!=revision:
                         old=TILE_CACHE.pop(old_key);TILE_CACHE_BYTES-=len(old[0])+len(old[2])
                 TILE_REVISIONS[path]=revision
-        cache_key=(path,revision,key,z,x,y)
+        cache_key=(path,revision,key,z,x,y,packed)
         # Coalesce duplicate requests for the same tile without a global build lock.
         with BUILD_LOCKS[hash(cache_key)%len(BUILD_LOCKS)]:
             with TILE_LOCK:
@@ -264,7 +316,7 @@ def tile_entry(store,key,z,x,y):
                         args.append(source_id);args.extend(v for bounds in ranges for v in bounds)
                     sql+=' AND ('+' OR '.join(filters)+')'
                 rows=db.execute(sql,args)
-            data,count=encode_points(rows,z,x,y)
+            data,count=(encode_point_batches if packed else encode_points)(rows,z,x,y)
             compressed=gzip.compress(data,compresslevel=1,mtime=0)
             entry=(data,count,compressed,revision)
             size=len(data)+len(compressed)

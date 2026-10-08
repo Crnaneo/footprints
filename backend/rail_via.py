@@ -180,6 +180,10 @@ class _LineAxis:
         self.metadata = metadata
         self.index = index
         self.line_id = line_id
+        self.declared_station_ids = {
+            sid for sid, node in zip(index.station_ids, index.station_nodes)
+            if node in index.lines[line_id]["station_nodes"]
+        }
         self.positions: dict[str, list[tuple[Any, float]]] = {}
         self.station_xy: dict[str, tuple[float, float]] = {}
         for key, rows in stations.items():
@@ -233,8 +237,8 @@ class _LineAxis:
         end_xy = self.station_xy.get(via_id) or self._catalog_station_xy(via_id)
         if start_xy is None or end_xy is None:
             raise ViaError("所选线路上找不到这两站之间的线路资料。")
-        first = self._nearest_line_way(start_xy)
-        last = self._nearest_line_way(end_xy)
+        first = self._nearest_line_way(start_xy, origin_id)
+        last = self._nearest_line_way(end_xy, via_id)
         if first is None or last is None:
             raise ViaError("所选线路上找不到这两站之间的线路资料。")
         chain = None
@@ -356,7 +360,7 @@ class _LineAxis:
                 entry_way = bridges[k][3]
         return pieces
 
-    def _nearest_line_way(self, xy: tuple[float, float]) -> int | None:
+    def _nearest_line_way(self, xy: tuple[float, float], station_id: str | None = None) -> int | None:
         """The catalog way of this line closest to a station's projected point."""
         from shapely.geometry import Point
         point = Point(*xy)
@@ -368,7 +372,15 @@ class _LineAxis:
             distance = point.distance(self.ways[way_id]["geom"])
             if best is None or distance < best[0]:
                 best = (distance, way_id)
-        return best[1] if best else None
+        if best is not None:
+            return best[1]
+        # The public catalog retains explicitly declared stations even inside
+        # geometry holes. They must also work as via endpoints: clip to the
+        # closest available track, without drawing or counting the missing
+        # section. Proximity alone must not attach unrelated stations.
+        if station_id in self.declared_station_ids and self.ways:
+            return min(self.ways, key=lambda wid: point.distance(self.ways[wid]["geom"]))
+        return None
 
     def _way_adjacency(self, tolerance: float = _JUNCTION_TOLERANCE) -> dict[int, dict[int, float]]:
         """Way-level adjacency; each edge carries the bridge distance it needs."""

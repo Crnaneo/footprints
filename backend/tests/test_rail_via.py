@@ -10,6 +10,99 @@ from backend.models import TripCreate
 from backend.store import TripStore
 
 
+def legacy_density_record(store, reverse=False):
+    raw = [[110, 35], [110.02, 35.00004], [110.03, 34.99996], [110.05, 35]]
+    with sqlite3.connect(store.path.parent / 'rail' / 'catalog.sqlite3') as db:
+        db.execute('UPDATE ways SET geometry=? WHERE id=100', (json.dumps(raw),))
+    ends = [raw[0], raw[-1]]
+    if reverse:
+        ends.reverse()
+    return store.create(TripCreate.model_validate({
+        'title': '旧经由', 'mode': 'rail', 'travel_date': '2026-10-05',
+        'source': '本地目录经由', 'geometry_kind': 'reconstructed',
+        'metadata': {'notes': [], 'via_segments': [{'line_id': '1',
+            'departure': {'iso': '2026-10-05T00:00:00Z'},
+            'arrival': {'iso': '2026-10-05T00:10:00Z'}}]},
+        # Keep a real gap as two independent pieces, with a shared time anchor.
+        'points': [{'longitude': lon, 'latitude': lat, 'segment_id': identity,
+                    'timestamp': f'2026-10-05T00:{minute:02}:00Z'}
+                   for identity, minute, (lon, lat) in [
+                       ('0', 0, ends[0]), ('0', 5, ends[1]),
+                       ('0/1', 5, ends[1]), ('0/1', 10, ends[0])]]}))
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_upgrade_density_preserves_source_nodes_times_gaps_and_indexes(setup, reverse):
+    from backend.rail_density import apply_plan, payload_hash, upgrade_record
+    _, store = setup
+    old = legacy_density_record(store, reverse)
+    control = store.create(TripCreate.model_validate({**old, 'mode': 'other', 'geometry_kind': 'observed'}))
+    with store.connect() as db:
+        payload = db.execute('SELECT payload FROM trips WHERE id=?', (old['id'],)).fetchone()[0]
+    new = upgrade_record(store, old)
+    assert len(new['points']) == 8
+    assert new['metadata']['via_segments'] == old['metadata']['via_segments']
+    for identity in ['0', '0/1']:
+        before = [p for p in old['points'] if p['segment_id'] == identity]
+        after = [p for p in new['points'] if p['segment_id'] == identity]
+        assert after[0]['timestamp'] == before[0]['timestamp']
+        assert after[-1]['timestamp'] == before[-1]['timestamp']
+        assert after[1]['latitude'] != 35 and after[2]['latitude'] != 35
+        assert [p['timestamp'] for p in after] == sorted(p['timestamp'] for p in after)
+    apply_plan(store, [{'before_sha256': payload_hash(payload), 'record': new}])
+    saved = store.get(old['id'])
+    assert saved == new and saved['created_at'] == old['created_at']
+    assert store.get(control['id']) == control
+    assert upgrade_record(store, saved) == saved
+    with store.connect() as db:
+        assert db.execute('SELECT point_count FROM map_bounds WHERE trip_id=?', (old['id'],)).fetchone()[0] == 8
+    assert next(t for t in store.list() if t['id'] == old['id'])['point_count'] == 8
+
+
+@pytest.mark.parametrize('failure', ['stale', 'index'])
+def test_upgrade_density_batch_is_atomic(setup, monkeypatch, failure):
+    from backend.rail_density import apply_plan, payload_hash, upgrade_record
+    import backend.store as storage
+    _, store = setup
+    first = legacy_density_record(store)
+    second = store.create(TripCreate.model_validate(first))
+    changes = []
+    for old in [first, second]:
+        with store.connect() as db:
+            payload = db.execute('SELECT payload FROM trips WHERE id=?', (old['id'],)).fetchone()[0]
+        changes.append({'before_sha256': payload_hash(payload), 'record': upgrade_record(store, old)})
+    if failure == 'stale':
+        changes[1]['before_sha256'] = 'outdated'
+    else:
+        original = storage.index_record
+        def fail_second(db, record):
+            if record['id'] == second['id']:
+                raise ValueError('index failure')
+            original(db, record)
+        monkeypatch.setattr(storage, 'index_record', fail_second)
+    with pytest.raises(ValueError):
+        apply_plan(store, changes)
+    assert store.get(first['id']) == first and store.get(second['id']) == second
+    with store.connect() as db:
+        assert [r[0] for r in db.execute('SELECT point_count FROM map_bounds')] == [4, 4]
+
+
+def test_upgrade_density_leaves_ambiguous_parallel_curves_unexpanded(setup):
+    from backend.rail_density import LineSource
+    from backend.rail_coverage import project
+    from backend.rail_manual import editor_index
+    _, store = setup
+    legacy_density_record(store)
+    with sqlite3.connect(store.path.parent / 'rail' / 'catalog.sqlite3') as db:
+        db.execute('INSERT INTO ways VALUES(?,?,?,?)', (103, '[10,11]',
+                   json.dumps([[110, 35], [110.025, 34.99996], [110.05, 35]]), '{}'))
+        db.execute("UPDATE lines SET ways='[100,101,102,103]' WHERE id=1")
+    source = LineSource(editor_index(store), 1)
+    a, b = project(110, 35), project(110.05, 35)
+    coords, found = source.restore_edge(a, b)
+    assert not found and coords == [a, b]
+
+
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
     monkeypatch.setenv('FOOTPRINT_DATA_DIR', str(tmp_path))
@@ -285,6 +378,42 @@ def test_disconnected_line_splits_into_pieces(setup_broken):
     record = client.get('/api/trips/' + saved.json()['id']).json()
     assert {p['segment_id'] for p in record['points']} == ids
     assert 8.5 < record['distance_km'] < 8.9
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+@pytest.mark.parametrize('declared', [False, True])
+def test_via_endpoint_in_large_catalog_gap(setup_broken, reverse, declared):
+    client, store = setup_broken
+    # Like 阳台山 on 京港高速线: the catalog lists the station but its
+    # available track ends more than 3 km away. Keep the available pieces,
+    # without inventing the missing tail or attaching undeclared stations.
+    with sqlite3.connect(store.path.parent / 'rail' / 'catalog.sqlite3') as db:
+        db.execute('UPDATE stations SET lon=110.14 WHERE id=12')
+        if not declared:
+            db.execute("UPDATE lines SET stations='[11]' WHERE id=2")
+    if declared:
+        catalog = client.get('/api/rail-catalog/lines/2/stations').json()
+        assert any(s['id'] == 'osm:12' for s in catalog['stations'])
+    origin, destination = ('osm:12', 'osm:11') if reverse else ('osm:11', 'osm:12')
+    body = {'travel_date': '2026-10-05', 'origin_id': origin, 'destination_id': destination, 'rows': [{
+        'origin_id': origin, 'line_id': '2', 'via_id': destination,
+        'departure': {'mode': 'manual', 'value': '16:29'}, 'arrival': {'mode': 'auto'}}]}
+    response = client.post('/api/rail-via/preview', json=body)
+    if not declared:
+        assert response.status_code == 400
+        assert '所选线路上找不到' in response.json()['detail']
+        return
+    assert response.status_code == 200
+    payload = response.json()
+    points = payload['trip']['points']
+    expected = [110, 110.03, 110.035, 110.10]
+    assert [p['longitude'] for p in points] == pytest.approx(expected[::-1] if reverse else expected)
+    assert points[1]['segment_id'] != points[2]['segment_id']
+    assert points[1]['timestamp'] == points[2]['timestamp']
+    assert [p['timestamp'] for p in points] == sorted(p['timestamp'] for p in points)
+    saved = client.post('/api/trips', json=payload['trip'])
+    assert saved.status_code == 201
+    assert 8.5 < saved.json()['distance_km'] < 8.9
 
 
 def test_connected_rows_keep_all_edges_and_dwell_times(setup):

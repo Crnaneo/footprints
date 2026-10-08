@@ -5,6 +5,9 @@ import {
   NavigationControl,
   Popup,
   ScaleControl,
+  addProtocol,
+  removeProtocol,
+  setWorkerCount,
   setWorkerUrl,
   type VectorTileSource,
   type MapLayerMouseEvent,
@@ -16,8 +19,11 @@ import type { GpsOverlay, Trip, TrackPoint } from '../types';
 import { api } from '../lib/api';
 import { loadBasemapStyle } from '../lib/basemap';
 import { boundsForPoints, type TrackBounds } from '../lib/geometry';
+import { nearestPointId, PointTileQueue } from '../lib/pointTiles';
 
 setWorkerUrl(workerUrl);
+setWorkerCount(Math.max(1, Math.min(2, Math.floor((navigator.hardwareConcurrency || 4) / 2))));
+let pointProtocolId = 0;
 
 interface TrackMapProps {
   trips: Trip[];
@@ -132,6 +138,11 @@ function TrackMap(props: TrackMapProps) {
       return;
     }
     mapRef.current = map;
+    const protocol = `footprint-points-${++pointProtocolId}`;
+    const pointRequests = new PointTileQueue();
+    addProtocol(protocol, (request, controller) => pointRequests.request(
+      `${window.location.origin}/${request.url.split('://')[1]}`, controller.signal,
+    ));
     map.addControl(new NavigationControl({ showCompass: true }), 'top-right');
     map.addControl(new ScaleControl({ unit: 'metric', maxWidth: 120 }), 'bottom-left');
     map.addControl(new AttributionControl({
@@ -152,7 +163,7 @@ function TrackMap(props: TrackMapProps) {
     let fittedNonce = props.fitNonce;
     let remoteStyleActive = false;
 
-    const tileUrl=(view:string)=>`${window.location.origin}/api/map/tiles/${view}/{z}/{x}/{y}.pbf`;
+    const tileUrl=(view:string)=>`${protocol}://api/map/tiles/${view}/{z}/{x}/{y}.pbf?packed=true`;
     const ensureLayers = () => {
       if (!viewRef.current) return;
       if (!map.getSource(POINT_SOURCE)) {
@@ -240,12 +251,14 @@ function TrackMap(props: TrackMapProps) {
     map.on('click',POINT_LAYER,async (event: MapLayerMouseEvent) => {
       const feature=event.features?.[0];
       if (!feature) return;
+      const pointId=nearestPointId(feature,event.point,coordinate=>map.project(coordinate),event.lngLat.lng);
+      if (pointId===null) return;
       const selectedFlight=latestProps.current.selectedId;
       if (!selectedFlight || !unionRef.current?.related_trip_ids[selectedFlight]?.includes(feature.properties.tripId))
         latestProps.current.onSelect(feature.properties.tripId);
       detailAbort?.abort();const controller=new AbortController();detailAbort=controller;
       try {
-        const detail=await api<{title:string;source?:string;point:TrackPoint}>(`/api/map/point/${feature.id}`,{signal:controller.signal});
+        const detail=await api<{title:string;source?:string;point:TrackPoint}>(`/api/map/point/${pointId}`,{signal:controller.signal});
         if(controller.signal.aborted || disposed)return;
         const {point}=detail;const content=document.createElement('div');content.className='track-popup';
         const title=document.createElement('div');title.className='track-popup-title';title.textContent=detail.title;content.append(title);
@@ -264,10 +277,19 @@ function TrackMap(props: TrackMapProps) {
       sync();
       if (remoteStyleActive) setStatus('ready');
     });
+    const retainPointSource = (style: StyleSpecification) => {
+      const current = map.getStyle();
+      if (current?.sources[POINT_SOURCE]) {
+        style.sources[POINT_SOURCE] = current.sources[POINT_SOURCE];
+        style.layers.push(...current.layers.filter(layer => layer.id === POINT_LAYER));
+      }
+      return style;
+    };
     const fallback = () => {
       remoteStyleActive = false;
       styleReady = false;
-      map.setStyle(FALLBACK_STYLE, { diff: false });
+      // A basemap timeout must not discard and reparse the loaded point tiles.
+      map.setStyle(retainPointSource(structuredClone(FALLBACK_STYLE)));
       setStatus('offline');
     };
     map.on('error', (event) => {
@@ -291,12 +313,7 @@ function TrackMap(props: TrackMapProps) {
         styleReady = false;
         // Preserve the already-loaded point source while adding the basemap.
         // A full style reset would parse and upload the million-point tiles twice.
-        const current=map.getStyle();
-        if(current.sources[POINT_SOURCE]) {
-          style.sources[POINT_SOURCE]=current.sources[POINT_SOURCE];
-          style.layers.push(...current.layers.filter(layer=>layer.id===POINT_LAYER));
-        }
-        map.setStyle(style);
+        map.setStyle(retainPointSource(style));
         styleReadyTimeout = setTimeout(() => {
           if (!disposed && !styleReady) fallback();
         }, 15_000);
@@ -342,6 +359,8 @@ function TrackMap(props: TrackMapProps) {
       retryRef.current = null;
       mapRef.current = null;
       map.remove();
+      pointRequests.dispose();
+      removeProtocol(protocol);
     };
   }, []);
 

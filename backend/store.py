@@ -207,33 +207,39 @@ class TripStore:
             if row is None:
                 return None
             record = transform(json.loads(row["payload"]))
-            summary = {key: value for key, value in record.items() if key != "points"}
-            search = " ".join(str(record.get(key) or "") for key in ("title", "service_number", "origin", "destination", "notes")).casefold()
-            connection.execute(
-                "UPDATE trips SET title = ?, mode = ?, travel_date = ?, search_text = ?, summary = ?, payload = ? WHERE id = ?",
-                (record["title"], record["mode"], record["travel_date"], search,
-                 json.dumps(summary, ensure_ascii=False, allow_nan=False),
-                 json.dumps(record, ensure_ascii=False, allow_nan=False), trip_id))
-            preview_row = connection.execute("SELECT payload FROM map_previews WHERE trip_id = ?", (trip_id,)).fetchone()
-            if preview_row:
-                preview = json.loads(preview_row["payload"])
-                preview.update(summary)
-                # Geometry recovery can change an empty record into a track.
-                # Rebuild the bounded map preview as well as the map index.
-                groups = {}
-                for point in record["points"]:
-                    groups.setdefault(point["segment_id"], []).append(point)
-                sampled = []
-                for points in groups.values():
-                    stride = max(1, (len(points) + 159) // 160)
-                    sampled.extend(points[::stride])
-                    if sampled[-1] is not points[-1]:
-                        sampled.append(points[-1])
-                preview["points"] = [{key: point[key] for key in ("longitude", "latitude", "sequence", "segment_id")} for point in sampled]
-                connection.execute("UPDATE map_previews SET payload = ? WHERE trip_id = ?",
-                                   (json.dumps(preview, ensure_ascii=False, allow_nan=False), trip_id))
-            index_record(connection, record)
-            return record
+            return self.replace_record(connection, record)
+
+    @staticmethod
+    def replace_record(connection: sqlite3.Connection, record: dict[str, Any]) -> dict[str, Any]:
+        """Replace one existing record inside the caller's transaction."""
+        trip_id = record["id"]
+        summary = {key: value for key, value in record.items() if key != "points"}
+        search = " ".join(str(record.get(key) or "") for key in ("title", "service_number", "origin", "destination", "notes")).casefold()
+        connection.execute(
+            "UPDATE trips SET title = ?, mode = ?, travel_date = ?, search_text = ?, summary = ?, payload = ? WHERE id = ?",
+            (record["title"], record["mode"], record["travel_date"], search,
+             json.dumps(summary, ensure_ascii=False, allow_nan=False),
+             json.dumps(record, ensure_ascii=False, allow_nan=False), trip_id))
+        preview_row = connection.execute("SELECT payload FROM map_previews WHERE trip_id = ?", (trip_id,)).fetchone()
+        if preview_row:
+            preview = json.loads(preview_row["payload"])
+            preview.update(summary)
+            # Geometry recovery can change an empty record into a track.
+            # Rebuild the bounded map preview as well as the map index.
+            groups = {}
+            for point in record["points"]:
+                groups.setdefault(point["segment_id"], []).append(point)
+            sampled = []
+            for points in groups.values():
+                stride = max(1, (len(points) + 159) // 160)
+                sampled.extend(points[::stride])
+                if sampled[-1] is not points[-1]:
+                    sampled.append(points[-1])
+            preview["points"] = [{key: point[key] for key in ("longitude", "latitude", "sequence", "segment_id")} for point in sampled]
+            connection.execute("UPDATE map_previews SET payload = ? WHERE trip_id = ?",
+                               (json.dumps(preview, ensure_ascii=False, allow_nan=False), trip_id))
+        index_record(connection, record)
+        return record
 
     def delete(self, trip_id: str) -> bool:
         with self.connect() as connection:

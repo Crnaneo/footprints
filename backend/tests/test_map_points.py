@@ -191,3 +191,55 @@ def test_merge_overlay_ranges_does_not_expand_ordinals():
  from backend.map_points import merge_ranges
  assert merge_ranges([[9,12],[0,2**31],[5,6]])==[[0,2**31]]
  assert merge_ranges([[10,12],[1,3],[3,7],[8,9],[20,20]])==[[1,12],[20,20]]
+
+
+def unpack(features):
+ result={}
+ for feature in features:
+  identity=feature['id'];deltas=json.loads(feature['properties'].get('pointDeltas','[]'))
+  coordinates=[ring[0] for ring in feature['geometry']]
+  assert feature['type']==1 and all(len(ring)==1 for ring in feature['geometry'])
+  assert len(coordinates)==len(deltas)+1 and len(coordinates)<=128
+  for i,coordinate in enumerate(coordinates):
+   if i:identity+=deltas[i-1]
+   assert identity not in result
+   result[identity]=(coordinate,feature['properties']['tripId'],feature['properties']['color'])
+ return result
+
+
+def test_packed_tiles_preserve_all_ids_duplicate_coordinates_colours_and_boundaries(tmp_path):
+ from backend.map_points import encode_points,encode_point_batches
+ # Interleave 80 trips, negative ID deltas, all colours, and exact duplicates.
+ rows=[(2000-i,str(i%80),.5+(i%9)*.00001,.5,'rail' if i%2 else 'flight') for i in range(900)]
+ rows.extend((3000+i,'dense',.5,.5,'other') for i in range(400))
+ for z,x,y in [(0,0,0),(1,0,1),(12,2048,2048)]:
+  old,count=encode_points(rows,z,x,y);new,packed_count=encode_point_batches(iter(rows),z,x,y)
+  expected={f['id']:(f['geometry'][0][0],f['properties']['tripId'],f['properties']['color']) for f in decode(old,tmp_path)}
+  packed=decode(new,tmp_path)
+  assert count==packed_count==len(unpack(packed))==1300
+  assert unpack(packed)==expected
+  assert len(packed)<len(rows) and len(new)<len(old)
+
+
+def test_packed_tile_api_and_cache_are_distinct_and_invalidate_with_original_data(tmp_path,monkeypatch):
+ from fastapi.testclient import TestClient
+ from backend.app import app
+ from backend.map_points import tile_entry
+ monkeypatch.setenv('FOOTPRINT_DATA_DIR',str(tmp_path));store=TripStore()
+ saved=record(store,[{'longitude':10+i*.00001,'latitude':30,'speed_kmh':i} for i in range(300)])
+ with TestClient(app) as client:
+  view=client.post('/api/map/views',json={'trip_ids':[saved['id']]}).json()
+  url=f"/api/map/tiles/{view['id']}/0/0/0.pbf"
+  original=client.get(url);packed=client.get(url+'?packed=true')
+  assert packed.headers['x-point-count']=='300' and packed.headers['etag']!=original.headers['etag']
+  points=unpack(decode(packed.content,tmp_path))
+  for identity in [min(points),max(points)]:
+   detail=client.get('/api/map/point/'+str(identity)).json()
+   assert detail['point'] in saved['points']
+  assert client.get(url+'?packed=true',headers={'If-None-Match':packed.headers['etag']}).status_code==304
+  assert client.get(url+'?packed=true',headers={'If-None-Match':original.headers['etag']}).status_code==200
+  a=tile_entry(store,view['id'],0,0,0,packed=True)
+  assert tile_entry(store,view['id'],0,0,0,packed=True) is a
+  store.delete(saved['id'])
+  changed=client.get(url+'?packed=true',headers={'If-None-Match':packed.headers['etag']})
+  assert changed.headers['x-point-count']=='0' and changed.headers['etag']!=packed.headers['etag']

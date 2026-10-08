@@ -165,7 +165,7 @@ def register_map_view(body: MapViewRequest) -> dict:
 
 
 @app.get('/api/map/tiles/{view_id}/{z}/{x}/{y}.pbf')
-def map_point_tile(view_id: str,z: int,x: int,y: int,request: Request) -> Response:
+def map_point_tile(view_id: str,z: int,x: int,y: int,request: Request,packed: bool=False) -> Response:
     from .map_points import tile_entry, view_revision
     store = current_map_store()
     # Revalidation must not decode/encode an evicted million-point tile just
@@ -174,13 +174,13 @@ def map_point_tile(view_id: str,z: int,x: int,y: int,request: Request) -> Respon
         try: revision = view_revision(store, view_id, z, x, y)
         except KeyError as e: raise HTTPException(404, detail=str(e)) from e
         except ValueError as e: raise HTTPException(400, detail=str(e)) from e
-        etag = f'"{view_id}-{revision}-{z}-{x}-{y}"'
+        etag = f'"{view_id}-{revision}-{z}-{x}-{y}{"-packed-v1" if packed else ""}"'
         if request.headers.get('if-none-match') == etag:
             return Response(status_code=304, headers={'ETag': etag, 'Cache-Control': 'private, no-cache', 'Vary': 'Accept-Encoding'})
-    try:data,count,compressed,revision=tile_entry(store,view_id,z,x,y)
+    try:data,count,compressed,revision=tile_entry(store,view_id,z,x,y,packed=packed)
     except KeyError as e:raise HTTPException(404,detail=str(e)) from e
     except ValueError as e:raise HTTPException(400,detail=str(e)) from e
-    etag=f'"{view_id}-{revision}-{z}-{x}-{y}"'
+    etag=f'"{view_id}-{revision}-{z}-{x}-{y}{"-packed-v1" if packed else ""}"'
     headers={'Cache-Control':'private, no-cache','ETag':etag,'X-Point-Count':str(count),'Vary':'Accept-Encoding'}
     if request.headers.get('if-none-match')==etag:return Response(status_code=304,headers=headers)
     if 'gzip' in request.headers.get('accept-encoding',''):
