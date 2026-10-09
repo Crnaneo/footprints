@@ -138,7 +138,8 @@ def test_csv_multitrack_import_list_export_and_delete(client, tmp_path):
     archive = tmp_path / "imports" / records[0]["metadata"]["original_file"]
     assert archive.read_bytes() == data
     assert records[0]["metadata"]["original_filename"] == "record.csv"
-    assert (archive.stat().st_mode & 0o777) == 0o600
+    if os.name != "nt":
+        assert (archive.stat().st_mode & 0o777) == 0o600
     selected = records[0]["id"]
     exported = client.get("/api/export.csv", params={"trip_id": selected, "format": "extended"})
     assert exported.status_code == 200
@@ -163,7 +164,8 @@ def test_settings_persist_privately_without_returning_token(client, tmp_path, mo
     assert response.json() == {"fr24_configured": True}
     assert "test-secret" not in client.get("/api/settings").text
     settings = tmp_path / "settings.json"
-    assert (settings.stat().st_mode & 0o777) == 0o600
+    if os.name != "nt":
+        assert (settings.stat().st_mode & 0o777) == 0o600
     assert json.loads(settings.read_text())["fr24_api_token"] == "test-secret"
     monkeypatch.delenv("FR24_API_TOKEN")
     assert client.get("/api/settings").json() == {"fr24_configured": True}

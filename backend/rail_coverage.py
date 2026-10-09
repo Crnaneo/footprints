@@ -464,7 +464,7 @@ def fingerprint(store):
 def read_coverage(store=None):
  store=store or TripStore();catalog,cache=paths(store)
  if cache.exists():
-  result=json.loads(cache.read_text())
+  result=json.loads(cache.read_text(encoding='utf-8'))
   legacy=result.get('coverage_version')!=COVERAGE_VERSION
   result['stale']=result.get('fingerprint')!=fingerprint(store) or legacy
   if legacy:result['lines']=[];result['unresolved_lines']=[]
@@ -515,4 +515,4 @@ def _cache_result(store,index,lines,summaries,stamp,visits):
  result['boundary_rejections']=getattr(index,'boundary_rejections',[])
  result['hub_inferences']=getattr(index,'hub_inferences',[])
  result['method']+=' 合并后递归校验显示两端：站中心1公里内、本区间线路有效点至少2个，或真实半径1公里圆内原始点至少10个，且有到达日期；删除端站后继续检查新边界，剩单站不形成区间。区间内部无其它线路连接、两端非客运且无有记录的其它线路邻站衔接不计区间。枢纽A最近非客运B，在A的1公里内关联铁路有效点>5且B向A本线有点时补判A-B；C-A-B两侧已有X-C及B-Y记录，且两侧向A有本线点，或C/B均非客运且无其它线路连接时可贯通。父子目录不作为独立换线连接。'
- tmp=cache.with_suffix('.tmp');tmp.write_text(json.dumps(result,ensure_ascii=False));tmp.replace(cache)
+ tmp=cache.with_suffix('.tmp');tmp.write_text(json.dumps(result,ensure_ascii=False),encoding='utf-8');tmp.replace(cache)

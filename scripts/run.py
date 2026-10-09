@@ -17,12 +17,21 @@ parser = argparse.ArgumentParser(description="Footprint local application")
 parser.add_argument("--open", action="store_true", help="Open the application in your browser")
 args = parser.parse_args()
 
-port = int(os.environ.get("FOOTPRINT_PORT", "8765"))
+try:
+    port = int(os.environ.get("FOOTPRINT_PORT", "8765"))
+    if not 1 <= port <= 65535:
+        raise ValueError
+except ValueError:
+    print("FOOTPRINT_PORT must be an integer from 1 to 65535.")
+    sys.exit(1)
 ports = [port] if "FOOTPRINT_PORT" in os.environ else [8765, 8766]
 for port in ports:
     try:
         with socket.socket() as check:
-            check.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if os.name == "nt":
+                check.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            else:
+                check.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             check.bind(("127.0.0.1", port))
         break
     except OSError:
@@ -44,7 +53,7 @@ os.environ["FOOTPRINT_PORT"] = str(port)
 url = f"http://127.0.0.1:{port}"
 
 if not (ROOT / "dist" / "index.html").exists():
-    print("Please run npm run build first, or use start.command.")
+    print("Please run npm start to install dependencies and build the frontend.")
     sys.exit(1)
 
 if args.open:

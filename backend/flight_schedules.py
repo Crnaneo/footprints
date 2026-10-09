@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import csv
-import fcntl
+import errno
+import os
 import hashlib
 import io
 import json
@@ -22,6 +23,11 @@ import httpx
 
 from .providers import ProviderError, UTC, _airport, _airport_codes, _airport_tz, _datetime, _iso, _normal, _number
 from .store import default_database_path
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 REPOSITORY = "https://github.com/MrAirspace/aircraft-flight-schedules"
 RELEASES = "https://api.github.com/repos/MrAirspace/aircraft-flight-schedules/releases"
@@ -38,7 +44,7 @@ def cache_dir() -> Path:
 
 def _read(path: Path):
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
@@ -47,7 +53,7 @@ def _write(path: Path, value) -> None:
     # Atomic, also when the two local service ports prepare the same quarter.
     import uuid
     temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False))
+    temporary.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
     temporary.replace(path)
 
 
@@ -184,12 +190,26 @@ def cancel_download(asset: dict) -> None:
     _write(path.with_suffix(".status.json"), {"state": "cancelled", "asset": asset, "updated": time.time()})
 
 
+def _lock_download(lock) -> None:
+    if os.name == "nt":
+        lock.seek(0)
+        try:
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                raise BlockingIOError from exc
+            raise
+    else:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
 def _download(asset: dict, *, trust_env: bool = True) -> None:
     path = cache_dir() / asset["name"]
     status = path.with_suffix(".status.json")
-    with path.with_suffix(".lock").open("a") as lock:
+    # Closing the descriptor releases the lock on both platforms.
+    with path.with_suffix(".lock").open("a+b") as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _lock_download(lock)
         except BlockingIOError:
             return  # The other local service owns the same download.
         if _valid(path, asset):return

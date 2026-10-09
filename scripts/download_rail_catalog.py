@@ -12,7 +12,7 @@ rows=[r.split('|') for r in response.text.split('@')[1:]]
 stations=[{'name':r[1],'telecode':r[2]} for r in rows if len(r)>=3]
 if len(stations)<2000:raise ValueError('12306 passenger directory response is incomplete')
 station_tmp=directory/'passenger-stations.tmp'
-station_tmp.write_text(json.dumps({'source_url':station_url,'stations':stations},ensure_ascii=False))
+station_tmp.write_text(json.dumps({'source_url':station_url,'stations':stations},ensure_ascii=False),encoding='utf-8')
 station_tmp.replace(directory/'passenger-stations.json')
 query='[out:json][timeout:180];relation["type"="route"]["route"="railway"](18,73,54,136);out body;>>;out geom;node["railway"="station"](18,73,54,136);out body;'
 if not archive.exists():

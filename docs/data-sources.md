@@ -1,6 +1,6 @@
 # 公共数据准备与本地数据边界
 
-首次安装运行 `./scripts/setup.sh`，启动运行 `./start.command`。应用可从空数据库启动，安装不会自动下载大型目录。以下命令在项目根目录执行；统一入口的 `--list` 只展示命令。
+首次安装和启动方式见 [README](../README.md#安装与启动windows--linux--macos)：Windows 运行 `start.bat`，Linux 运行 `sh ./start.sh`，macOS 可双击 `start.command`。应用可从空数据库启动，安装不会自动下载大型目录。以下命令在项目根目录执行；Windows 将 `.venv/bin/python` 替换为 `.venv\Scripts\python.exe`。统一入口的 `--list` 只展示命令。
 
 ## 中国铁路目录
 

@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
-    "start": ".venv/bin/python scripts/run.py"
+    "start": "node scripts/start.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.49.0",

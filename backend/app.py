@@ -978,7 +978,8 @@ def update_settings(payload: SettingsUpdate) -> dict[str, bool]:
     directory.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=".settings-", dir=directory)
     try:
-        os.fchmod(fd, 0o600)
+        if os.name != "nt":
+            os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as output:
             json.dump({"fr24_api_token": token}, output)
             output.flush()

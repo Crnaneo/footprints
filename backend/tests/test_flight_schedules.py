@@ -1,5 +1,7 @@
 import asyncio
 import json
+import subprocess
+import sys
 from datetime import date
 
 import duckdb
@@ -10,6 +12,36 @@ from backend import flight_schedules as fs, flight_reconstruction as fr
 from backend.providers import ProviderError
 
 DAY = date(2026, 2, 8)
+
+
+def test_download_lock_excludes_other_process_and_releases_on_close(tmp_path):
+    path = tmp_path / 'download.lock'
+    code = '''
+import sys
+from backend.flight_schedules import _lock_download
+with open(sys.argv[1], 'a+b') as lock:
+    try:
+        _lock_download(lock)
+    except BlockingIOError:
+        sys.exit(2)
+'''
+    def attempt():
+        return subprocess.run([sys.executable, '-c', code, str(path)],
+                              capture_output=True, text=True, timeout=30)
+    with path.open('a+b') as lock:
+        fs._lock_download(lock)
+        result = attempt()
+        assert result.returncode == 2, result.stderr
+    result = attempt()
+    assert result.returncode == 0, result.stderr
+
+
+def test_cache_json_preserves_unicode(tmp_path):
+    path = tmp_path / 'cache.json'
+    value = {'airline': '中国航空 ✈️'}
+    fs._write(path, value)
+    assert json.loads(path.read_bytes().decode('utf-8')) == value
+    assert fs._read(path) == value
 
 
 @pytest.fixture(autouse=True)

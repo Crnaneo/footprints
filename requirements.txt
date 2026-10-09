@@ -10,3 +10,4 @@ scipy==1.17.1
 shapely==2.1.2
 
 duckdb==1.4.3
+tzdata==2026.5

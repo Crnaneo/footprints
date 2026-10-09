@@ -2,6 +2,7 @@
 No user locations are included in the download query.
 """
 import gzip, json, sqlite3, sys, re
+from contextlib import closing
 from pathlib import Path
 import ijson
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -31,7 +32,7 @@ for rid,e in raw_relations.items():
 print('relations',len(relations),'candidate ways',len(allowed),'stations',len(stations),flush=True)
 tmp=target.with_suffix('.building')
 tmp.unlink(missing_ok=True)
-with sqlite3.connect(tmp) as db:
+with closing(sqlite3.connect(tmp)) as db:
  db.execute('CREATE TABLE lines(id INTEGER PRIMARY KEY,name TEXT,tags TEXT,ways TEXT,stations TEXT)')
  db.execute('CREATE TABLE ways(id INTEGER PRIMARY KEY,nodes TEXT,geometry TEXT,tags TEXT)')
  db.execute('CREATE TABLE stations(id INTEGER PRIMARY KEY,name TEXT,lon REAL,lat REAL,tags TEXT)')

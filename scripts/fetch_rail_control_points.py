@@ -17,7 +17,7 @@ def supplement(directory):
     with sqlite3.connect(catalog) as db:
         known={r[0] for r in db.execute('SELECT id FROM stations')}
         members={n for row in db.execute('SELECT stations FROM lines') for n in json.loads(row[0])}
-    saved=json.loads(cache.read_text())['elements'] if cache.exists() else []
+    saved=json.loads(cache.read_text(encoding='utf-8'))['elements'] if cache.exists() else []
     cached={e['id']:e for e in saved}
     missing=sorted(members-known-cached.keys())
     batches=[missing[i:i+200] for i in range(0,len(missing),200)]
@@ -34,7 +34,7 @@ def supplement(directory):
             cached.update({e['id']:e for e in elements})
             print(f'Public catalog nodes: batch {i}/{len(batches)}',flush=True)
     temporary=cache.with_suffix('.tmp')
-    temporary.write_text(json.dumps({'source':'OpenStreetMap API v0.6','elements':list(cached.values())},ensure_ascii=False))
+    temporary.write_text(json.dumps({'source':'OpenStreetMap API v0.6','elements':list(cached.values())},ensure_ascii=False),encoding='utf-8')
     temporary.replace(cache)
     rows=[]
     for e in cached.values():
